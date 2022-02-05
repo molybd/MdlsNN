@@ -127,3 +127,18 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# test files
+test*
+
+# data and results
+fitting_experiments/
+
+# for my reference only
+reference/
+
+# temporary backup files
+backup/
+
+# comments for myself only
+comments_for_myself.md
