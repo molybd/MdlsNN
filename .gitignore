@@ -142,3 +142,10 @@ backup/
 
 # comments for myself only
 comments_for_myself.md
+
+# images
+*.png
+*.svg
+
+# legacy codes
+legacy/*

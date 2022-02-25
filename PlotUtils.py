@@ -5,12 +5,11 @@ import visdom
 import torch
 import numpy as np
 
-
 class MdlsNNLogger:
-    def __init__(self, epoch_num, dls_tensor_data_set, model, diameter_distribution_xtype='log', environment='main'):
+    def __init__(self, epoch_num, mdls_tensordata, model, diameter_distribution_xtype='log', environment='MdlsNN'):
         self.epoch_num = epoch_num
         self.viz = visdom.Visdom(env=environment)
-        self.dls_tensor_data_set = dls_tensor_data_set
+        self.mdls_tensordata = mdls_tensordata
         self.model = model
         self.diameter_distribution_xtype = diameter_distribution_xtype
         self.windows = {
@@ -49,9 +48,10 @@ class MdlsNNLogger:
     def initG1square(self, exp_data_plot_type='line'):
         '''legend of each exp data is angle + exp'''
         # plot original exp data as scatter
+        angle_list = list(self.mdls_tensordata.data.keys())
         if exp_data_plot_type == 'scatter':
             # scatter plot of exp data
-            data = self.dls_tensor_data_set.dls_tensor_data_list[0]
+            data = self.mdls_tensordata.data[angle_list[0]]
             points = torch.stack((data.tau, data.g1square)).T
             points_y = torch.ones_like(data.tau, dtype=torch.int).unsqueeze(1)
             name = str(data.angle.item()) + 'exp'
@@ -62,8 +62,8 @@ class MdlsNNLogger:
                 update=None,
                 opts={'xtype':'log', 'title':'g1square', 'markersize':4}
             )
-            for i in range(1, len(self.dls_tensor_data_set.dls_tensor_data_list)):
-                data = self.dls_tensor_data_set.dls_tensor_data_list[i]
+            for i in range(1, len(angle_list)):
+                data = self.mdls_tensordata.data[angle_list[i]]
                 points = torch.stack((data.tau, data.g1square)).T
                 name = str(data.angle.item()) + 'exp'
                 self.viz.scatter(
@@ -75,10 +75,13 @@ class MdlsNNLogger:
                 )
         else:
             # line plot of exp data
-            tau = self.dls_tensor_data_set.tau
-            g1square_list = [data.g1square for data in self.dls_tensor_data_set.dls_tensor_data_list]
+            tau = self.mdls_tensordata.data[angle_list[0]].tau
+            g1square_list, names = [], []
+            for angle in self.mdls_tensordata.data.keys():
+                data = self.mdls_tensordata.data[angle]
+                g1square_list.append(data.g1square)
+                names.append(str(angle)+'exp')
             g1square = torch.stack(g1square_list).T
-            names = [str(data.angle.item())+'exp' for data in self.dls_tensor_data_set.dls_tensor_data_list]
             self.viz.line(
                 X=tau,
                 Y=g1square,
@@ -88,10 +91,11 @@ class MdlsNNLogger:
             )
 
         # plot fit data as line
-        tau, g1square = self.model.getG1square(to_numpy=False)
+        tau = self.model.tau
+        g1square = self.model.getG1square(to_numpy=False)
         for i in range(len(g1square)):
             g1square_i = g1square[i]
-            name = str(self.model.all_angle[i].item()) + 'fit'
+            name = str(self.model.angle[i].item()) + 'fit'
             self.viz.line(
                 X=tau,
                 Y=g1square_i,
@@ -103,10 +107,11 @@ class MdlsNNLogger:
 
     def updateG1square(self):
         # plot fit data as line
-        tau, g1square = self.model.getG1square(to_numpy=False)
+        tau = self.model.tau
+        g1square = self.model.getG1square(to_numpy=False)
         for i in range(len(g1square)):
             g1square_i = g1square[i]
-            name = str(self.model.all_angle[i].item())+'fit'
+            name = str(self.model.angle[i].item())+'fit'
             self.viz.line(
                 X=tau,
                 Y=g1square_i,
@@ -119,8 +124,9 @@ class MdlsNNLogger:
     def updateNG(self):
         #theta1 = self.model.all_theta[0]
         #theta2 = self.model.all_theta[-1]
-        d, N = self.model.getNumberDistribution(to_numpy=False)
-        d, G = self.model.getIntensityDistribution(to_numpy=False)
+        d = self.model.getD(to_numpy=False)
+        N = self.model.getN(to_numpy=False)
+        G = self.model.getG(to_numpy=False)
         #d, G2 = self.model.getIntensityDistribution(theta=theta2, to_numpy=False)
         y = torch.stack((N, G)).T
         self.viz.line(
@@ -131,7 +137,7 @@ class MdlsNNLogger:
             opts={
                 'xtype':self.diameter_distribution_xtype,
                 'title':'Diameter Distribution',
-                'legend':['number', 'intensity@small-angle']
+                'legend':['number', 'intensity@90°']
             }
         )
         
@@ -158,6 +164,51 @@ def plotAxisCorrelationFunction(ax, tau_list, g_list, *args, **kwargs):
     ax.set_title('Correlation Function')
     ax.set_xlabel('$\\rm \\tau\;(\mu s)$')
     ax.set_ylabel('$\\rm |g_1|^2$')
+
+def plotSimData(mdlsdata, show=False, filename=None):
+    fig = plt.figure(figsize=(12, 8), dpi=300, facecolor='white')
+    ax1 = plt.subplot2grid((2,3), (0,0), colspan=2)
+    plotAxisCorrelationFunction(
+        ax1,
+        [dlsdata.tau for dlsdata in mdlsdata.data.values()],
+        [dlsdata.g1square for dlsdata in mdlsdata.data.values()]
+    )
+
+    ax2 = plt.subplot2grid((2,3), (0,2))
+    ax2.plot(
+        list(mdlsdata.data.keys()),
+        [dlsdata.intensity for dlsdata in mdlsdata.data.values()]
+    )
+    ax2.set_title('Scattering Intensity')
+    ax2.set_xlabel('angle (degree)')
+    ax2.set_ylabel('intensity (cps)')
+
+    ax3 = plt.subplot2grid((2,3), (1,0), colspan=3)
+    d = np.array(mdlsdata.sim_info['d'])
+    N = np.array(mdlsdata.sim_info['N'])
+    width = 0.1 * d  # automatically determine the width of bar according to data
+    if mdlsdata.sim_info['Nd_mode'] == 'discrete':
+        ax3.bar(d, N, width, color='lightskyblue', label='simulated number distribution')
+    elif mdlsdata.sim_info['Nd_mode'] == 'continuous':
+        ax3.fill(d, N, color='lightskyblue', edgecolor=None, alpha=0.5, label='simulated number distribution')
+
+    fig.tight_layout()
+    if show:
+        plt.show()
+    if filename != None:
+        fig.savefig(filename)
+
+
+
+
+
+
+
+
+
+
+
+
 
 def plotFitExperimentResult(fit_exp, show=False, figname=None, figsize=(15,15), facecolor='white', **kwargs):
     # kwargs pass to plt.figure()

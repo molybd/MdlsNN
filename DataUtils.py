@@ -1,12 +1,18 @@
+from ast import Param
 import numpy as np
+from numpy import ndarray
 import PyMieScatt as ps
+import copy
+
+from PlotUtils import plotSimData
 
 '''
 ====== Attention ======
 at all place, the units are the regularly used units, c.a.
 #param          #unit
 tau          microsecond
-angle        degree
+angle        degree  # must be integer
+theta        radian
 wavelength   nanometer
 viscosity    cP
 temperature  Kelvin
@@ -15,216 +21,328 @@ kb           J/K
 at these units, the calculated Gamma should be multiplied by 1e24 to
 become μm^(-1) unit that fits tau. for example, if gamma calculated is
 2, then you should make it 2e24, then calculate g1 = exp(-gamma*tau)
+
+=====================================
+some abbreviation or code names
+# name                  # simple name
+diameter                d
+number distribution     N
+intensity distribution  G
+simulate/simulation     sim
+experimental            exp
+=====================================
 '''
 
-default_param_dict = {
-    'tau_min': 0.1,              # microsec
-    'tau_max': 1e6,              # microsec
-    'tau_num': 200,              
-    'angle': 90,                 # degree
-    'wavelength': 633,           # nanometer
-    'temperature': 298,          # Kelvin
-    'viscosity': 0.89,           # cP
-    'RI_liquid': 1.331,
-    'RI_particle_real': 1.5875,
-    'RI_particle_img': 0
-}
-
-class DlsDataSet:
-    def __init__(self, mode='exp', dls_data_list=None):
-        '''
-        mode = 'exp' or 'sim'
-        '''
-        self.mode = mode
-        self.angle_list = []
-        self.theta_list = []
-        if dls_data_list == None:
-            self.dls_data_list = []
-        else:
-            self.dls_data_list = dls_data_list
-            if len(self.dls_data_list) > 0:
-                self.updateAttributes()
-
-    def addDlsData(self, dls_data):
-        self.dls_data_list.append(dls_data)
-        self.updateAttributes()
-
-    def updateAttributes(self):
-        '''Assume that all the dls data in this data set share the
-        same parameters, e.g. tau, wavelength, temperature etc. except
-        for angles, g1, g2 and intensity
-        '''
-        dls_data = self.dls_data_list[-1]
-        self.tau = dls_data.tau
-        self.wavelength = dls_data.param_dict['wavelength']
-        self.temperature = dls_data.param_dict['temperature']
-        self.viscosity = dls_data.param_dict['viscosity']
-        self.RI_liquid = dls_data.param_dict['RI_liquid']
-        self.RI_particle_complex = complex(dls_data.param_dict['RI_particle_real'], dls_data.param_dict['RI_particle_img'])
-        self.angle_list = [dls_data.angle for dls_data in self.dls_data_list]
-        self.theta_list = [dls_data.theta for dls_data in self.dls_data_list]
-
-class DlsData:
-    def __init__(self, tau, g2, param_dict, mode='exp', sim_info_dict=None):
-        '''
-        mode = 'exp' or 'sim'
-        '''
-        self.tau = tau
-        self.g2 = g2
-        self.param_dict = param_dict
-        self.angle = param_dict['angle']
-        self.theta = self.angle/180*np.pi
-        self.mode = mode
-        if mode == 'exp':
-            self.sim_info_dict = None
-        elif mode == 'sim':
-            self.sim_info_dict = sim_info_dict
-
-        baseline = param_dict['baseline']
-        self.intensity = np.sqrt(baseline)
-        g1, g1square, beta = self.calcG1(tau, g2, baseline)
-        self.g1 = g1
-        self.g1square = g1square
-        self.beta = beta
-
-    def calcG1(self, tau, g2, baseline):
-        B = baseline
-        Ctau = g2/B - 1
-        beta = self.calcBeta(tau, Ctau)
-        g1square = Ctau/beta
-        g1 = np.sign(g1square) * np.sqrt(np.abs(g1square))
-        return g1, g1square, beta
-
-    def calcBeta(self, tau, Ctau, point_num=10):
-        y = np.log(Ctau[:point_num])
-        x = tau[:point_num]
-        intercept = np.polyfit(x, y, 1)[-1]
-        beta = np.exp(intercept)
-        return beta
+################# constants ###############
+'常数'
+kb = 1.38064852e-23
+###########################################
 
 
-def genD(d_min=1, d_max=1e5, d_num=50, log_d=True):
-    if log_d:
-        d = np.logspace(np.log10(d_min), np.log10(d_max), num=d_num)
-    else:
-        d  =np.linspace(d_min, d_max, num=d_num)
-    return d
 
-
-def simulateDlsData(d, N, param_dict, g2_error_scale=0.0005, baseline_scale=265166514e9, baseline_error_scale=0.0001, beta=0.43, tau=None):
-    d, N = np.array(d), np.array(N)      # d in nanometer
-    tau_min = param_dict['tau_min']                # microsec
-    tau_max = param_dict['tau_max']              # microsec
-    tau_num = param_dict['tau_num']            # microsec
-    angle = param_dict['angle']                # degree
-    wavelength = param_dict['wavelength']          # nanometer
-    temperature = param_dict['temperature']          # Kelvin
-    viscosity = param_dict['viscosity']           # cP
-    RI_liquid = param_dict['RI_liquid']
-    RI_particle_real = param_dict['RI_particle_real']
-    RI_particle_img = param_dict['RI_particle_img']
-
-    if tau:
-        tau = np.array(tau)
-    else:
-        tau = np.logspace(np.log10(tau_min), np.log10(tau_max), num=tau_num)
-    
-    theta = angle/180*np.pi
-    beta = beta
-
-    g1, I_sum = simulateG1(d, N, tau, theta, wavelength, temperature, viscosity, RI_liquid, complex(RI_particle_real, RI_particle_img))
-    g1_without_error = g1
-
-    # 因为未来处理的时候可能会需要用到强度数据，所以baseline也不能随便选取的，需要根据实际强度计算
-    baseline_without_error = baseline_scale * I_sum**2  # 这里实际上是模拟了实际情况，即 g2(inf)=<I>**2
-    error_on_baseline = baseline_error_scale * baseline_without_error * np.random.randn()*np.random.randn()
-    baseline = baseline_without_error + error_on_baseline
-
-    g2_without_error = baseline * (1 + beta*g1**2)
-    error_on_g2 = g2_error_scale * baseline * np.random.randn(g1.size)*np.random.randn(g1.size)
-    g2 = g2_without_error + error_on_g2
-
-    sim_info_dict = {
-        'd': d,
-        'N': N,
-        'g2_error_scale': g2_error_scale,
-        'intensity': I_sum,
-        'beta': beta,
-        'error_on_g2': error_on_g2,
-        'g1_without_error': g1_without_error,
-        'g2_without_error': g2_without_error        
+class Params:
+    '''
+    储存和具体测试数据无关的参数
+    '''
+    default = {
+        'wavelength': 633,           # nanometer
+        'temperature': 298,          # Kelvin
+        'viscosity': 0.89,           # cP
+        'ri_liquid': 1.331,
+        'ri_particle_real': 1.5875,
+        'ri_particle_img': 0
     }
-    param_dict['baseline'] = baseline
+    def __init__(self, params_dict:dict=None) -> None:
+        if params_dict == None:
+            params_dict = copy.deepcopy(self.default)
+        self._update(params_dict)
 
-    dls_data = DlsData(tau, g2, param_dict, mode='sim', sim_info_dict=sim_info_dict)
-    return dls_data
+    def setParam(self, name:str, value:float):
+        params_dict = self.genDict()
+        params_dict[name] = value
+        self._update(params_dict)
+
+    def _update(self, params_dict:dict):
+        self.wavelength = params_dict['wavelength']
+        self.temperature = params_dict['temperature']
+        self.viscosity = params_dict['viscosity']
+        self.ri_liquid = params_dict['ri_liquid']
+        self.ri_particle_real = params_dict['ri_particle_real']
+        self.ri_particle_img = params_dict['ri_particle_img']
+
+    def toDict(self) -> dict:
+        dic = self.__dict__
+        return dic
 
 
-def simulateG1(d, N, tau, theta, wavelength, temperature, viscosity, RI_liquid, RI_particle_complex):
-    kb = 1.38064852e-23
-    n = RI_liquid
-    q = (4*np.pi*n*np.sin(theta/2)) / (wavelength)
-    Diffuse = (kb*temperature) / (3*np.pi*viscosity*d)             # shape == (n_d,)
-    Gamma = Diffuse * q**2 * 1e24  # make unit μm^-1               # shape == (n_d,)
-    I_d = [calcMieScatteringIntensity(theta, di, wavelength, RI_particle_complex) for di in d]
-    I_d = np.array(I_d)                                  # shape == (n_d,)
-    I_sum = np.sum(I_d*N)                                       
-    G = (I_d*N) / I_sum                              # shape == (n_d,)
-    exp = np.exp(-1*np.einsum('i,j->ij', Gamma, tau))  # shape == (n_d, n_tau)
-    g1 = np.einsum('i,ij->ij', G, exp)                   # shape == (n_d, n_tau)
-    g1 = np.sum(g1, axis=0)
-    return g1, I_sum
+
+################### calculation related functions ###########################
+'''与计算过程相关的函数'''
+
+def calcQ(theta:float, wavelength:float, ri_liquid:float) -> float:
+    return (4*np.pi*ri_liquid*np.sin(theta/2)) / (wavelength)
+
+def calcDiffuse(d:ndarray, temperature:float, viscosity:float) -> ndarray:
+    return (kb*temperature) / (3*np.pi*viscosity*d)
+
+def calcGamma(Diffuse:ndarray, q:float) -> ndarray:
+    return Diffuse * q**2 * 1e24  # make unit μsec^-1
+
+def calcG1(tau:ndarray, d:ndarray, N:ndarray, angle:float, params:Params) -> ndarray:
+    '''
+    模拟多分散样品在单个角度的场自相关函数g1
+    '''
+    theta = angle/180*np.pi
+    ri_particle_complex = complex(params.ri_particle_real, params.ri_particle_img)
+
+    q = calcQ(theta, params.wavelength, params.ri_liquid)
+    D = calcDiffuse(d, params.temperature, params.viscosity)
+    Gamma = calcGamma(D, q)  # shape=(n_d,)
+    g1i = np.exp(-1*np.einsum('i,j->ij', Gamma, tau))  # shape=(n_d, n_tau)
+
+    Id = np.array(
+        [mieScattInt(theta, di, params.wavelength, ri_particle_complex) for di in d]
+    )
+    G = Id*N / np.sum(Id*N)  # shape=(n_d,)
+    g1 = np.einsum('i,ij->j', G, g1i)  # shape=(n_tau,)
+    return g1
+
+def mieScattInt(theta:float, d:float, wavelength:float, ri_particle_complex:complex) -> float:
+    '''
+    只能计算单个角度单个粒径的米氏散射强度
+    '''
+    m = ri_particle_complex
+    x = np.pi*d/wavelength
+    mu = np.cos(theta)
+    S1, S2 = ps.MieS1S2(m, x, mu)
+    return np.abs(S1)**2  # S1是复数，这里是模的平方的意思
+
+##############################################################################
 
 
-def genDiameterNumDistribution(mu, sigma, number, d_min=1, d_max=1e4, d_num=50, log_d=True, d_array=None):
-    if d_array != None:
-        d = np.array(d_array)
-    else:
-        if log_d:
-            d = np.logspace(np.log10(d_min), np.log10(d_max), num=d_num)
-        else:
-            d = np.linspace(d_min, d_max, num=d_num)
+################### simulation related functions #############################
+
+def genContinuousN(d:ndarray, mu:list, sigma:list, number:list):
     N = np.zeros_like(d)
     if not hasattr(mu, '__iter__'):
         mu, sigma, number = [mu], [sigma], [number]
     for m, sig, num in zip(mu, sigma, number):
         N += num * np.exp(-(d-m)**2/(2*sig**2))
-    N = N / np.sum(N)
-    return d, N
+    N = N/np.sum(N)
+    return N
+
+##############################################################################
 
 
-def calcMieScatteringIntensity(theta, d, wavelength, RI_particle_complex):
-    '''
-    please refer to:
-    https://omlc.org/classroom/ece532/class3/mie_math.html
-    For regular DLS aparatus, incident light polarization is perpendicular 
-    to the scattering plane. And there is no analyzer for scattered light.
-    Then, according to the aforementioned webpage
-    I_s = I_s_parallel + I_s_perpendicular
-        = const. * (S2^2*I_i_parallel + S1^2*I_i_perpendicular)
-        = const. * S1^2*I_i_perpendicular
 
-    Param unit:
-    angle: radians
-    d and wavelength must have same unit
+class DlsData:
+    def __init__(self, data:dict, load=False) -> None:
+        params = data['params']  # Params object
+        if isinstance(params, dict):
+            self.params = Params(params)
+        elif isinstance(params, Params):
+            self.params = params
+        self.angle = data['angle']  
+        self.theta = self.angle/180*np.pi  
 
-    经过确认，这里输出的强度确实是与单个粒子散射总强度成正比
-    即，确实符合瑞利散射中散射强度与粒径6次方成正比
-    '''
-    m = RI_particle_complex
-    x = np.pi*d/wavelength
-    mu = np.cos(theta)
-    S1, S2 = ps.MieS1S2(m, x, mu)
-    return np.abs(S1)**2
+        self.mode = data['mode']
+        if 'sim_info' in data.keys():
+            self.sim_info = data['sim_info']
+        else:
+            self.sim_info = None
+        if 'exp_info' in data.keys():
+            self.exp_info = data['exp_info']
+        else:
+            self.exp_info = None
+
+        self.tau = np.array(data['tau']).flatten()
+        self.g2 = np.array(data['g2']).flatten()
+        self.baseline = data['baseline']
+        self.intensity = np.sqrt(self.baseline)
+        if load:
+            self.beta = np.array(data['beta']).flatten()
+            self.g1square = np.array(data['g1square']).flatten()
+            self.g1 = np.array(data['g1']).flatten()
+        else:
+            self.calcG1()
+
+    def calcG1(self, pnum_fitbeta:int=5) -> None:
+        # pnum_fitbeta是取前多少个点拟合beta的值
+        Ctau = self.g2/self.baseline - 1
+        self.beta = self._calcBeta(self.tau, Ctau, pnum_fitbeta)
+        g1square = Ctau/self.beta
+        self.g1square = g1square
+        self.g1 = np.sign(g1square) * np.sqrt(np.abs(g1square))
+
+    def _calcBeta(self, tau:ndarray, Ctau:ndarray, pnum_fitbeta:int) -> float:
+        y = np.log(Ctau[:pnum_fitbeta])
+        x = tau[:pnum_fitbeta]
+        intercept = np.polyfit(x, y, 1)[-1]
+        beta = np.exp(intercept)
+        return beta
+
+    def toDict(self) -> dict:
+        dic = self.__dict__
+        dic['tau'] = self.tau.tolist()
+        dic['g2'] = self.g2.tolist()
+        dic['g1'] = self.g1.tolist()
+        dic['g1square'] = self.g1square.tolist()
+        dic['params'] = self.params.toDict()
+        return dic
 
 
-def calcIntensityDistribution(d, N, wavelength, RI_particle_complex, theta=np.pi/2):
-    d, N = np.array(d), np.array(N)
-    I_d = [calcMieScatteringIntensity(theta, di, wavelength, RI_particle_complex) for di in d]
-    G = (I_d*N) / np.sum(I_d*N)
-    return d, G
+
+class MdlsData:
+    def __init__(self, dic:dict=None) -> None:
+        '''dic is pre-saved dict by self.toDict()'''
+        self.data = {}
+        if isinstance(dic, dict):
+            self.params = Params(dic['params'])
+            self.mode = dic['mode']
+            self.sim_info = dic['sim_info']
+            self.exp_info = dic['exp_info']
+            for angle in dic['data'].keys():
+                self.data[angle] = DlsData(dic['data'][angle], load=True)
+            
+    def addDlsData(self, dlsdata:DlsData):
+        self.data[dlsdata.angle] = dlsdata
+        self.updateParams(dlsdata)
+
+    def updateParams(self, dlsdata:DlsData):
+        self.params = dlsdata.params
+        self.mode = dlsdata.mode
+        self.sim_info = dlsdata.sim_info
+        self.exp_info = dlsdata.exp_info
+
+    def toDict(self) -> dict:
+        dic = self.__dict__
+        dic['params'] = self.params.toDict()
+        for angle in self.data.keys():
+            dic['data'][angle] = self.data[angle].toDict()
+        return dic
 
 
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    pass
+class DlsSimulator:
+    default_sim_info = {
+        'g2_error_scale': 0.0005,
+        'intensity_at_smallest_angle': (600e3, 1000e3),  # 随机生成600k~1M cps的强度
+        'intensity_error_scale': 0.001,
+        'SLS_baseline': (0.1e3, 2e3),   # 随机生成0.1k~2k cps的SLS基线
+        'beta': (0.2, 0.8)  # 随机生成0.2~0.8的beta
+    }
+    def __init__(self, d:ndarray, N:ndarray, Nd_mode:str, tau:ndarray, params:Params) -> None:
+        '''
+        Nd_mode = 'discrete' or 'continuous'
+        '''
+        self.Nd_mode = Nd_mode
+        self.tau = np.array(tau).flatten()
+        self.d = np.array(d).flatten()
+        self.N = np.array(N).flatten()
+        self.params = params
+
+        self.sim_info = copy.deepcopy(self.default_sim_info)
+        t = self.sim_info['intensity_at_smallest_angle']
+        self.sim_info['intensity_at_smallest_angle'] = t[0] + (t[1]-t[0])*np.random.rand()
+        t = self.sim_info['SLS_baseline']
+        self.sim_info['SLS_baseline'] = t[0] + (t[1]-t[0])*np.random.rand()
+        t = self.sim_info['beta']
+        self.sim_info['beta'] = t[0] + (t[1]-t[0])*np.random.rand()
+        self.sim_info['d'] = self.d.tolist()  # 便于存储
+        self.sim_info['N'] = self.N.tolist()  # 便于存储
+        self.sim_info['Nd_mode'] = Nd_mode
+
+    def simMdlsData(self, angles:list) -> MdlsData:
+        I_list = []
+        for angle in angles:
+            theta = angle/180*np.pi
+            ri_particle_complex = complex(self.params.ri_particle_real, self.params.ri_particle_img)
+            Id = np.array(
+                [mieScattInt(theta, di, self.params.wavelength, ri_particle_complex) for di in self.d]
+            )
+            I = np.sum(Id*self.N)
+            I_list.append(I)
+        min_angle = min(angles)
+        index = angles.index(min_angle)
+        scale = self.sim_info['intensity_at_smallest_angle'] / I_list[index]
+        I_list = [scale*Ii for Ii in I_list]
+
+        mdlsdata = MdlsData()
+        for angle, intensity in zip(angles, I_list):
+            dlsdata = self.simDlsData(angle, intensity)
+            mdlsdata.addDlsData(dlsdata)
+        return mdlsdata
+
+    def simDlsData(self, angle:float, intensity:float) -> DlsData:
+        '''
+        模拟单个角度的DLS数据
+        intensity是指用于模拟多角度DLS数据情况下该角度的静态散射强度，即<I>，
+        一般来说g2在tau趋向于正无穷时等于<I>^2
+        '''
+        g1 = calcG1(self.tau, self.d, self.N, angle, self.params)
+        beta = self.sim_info['beta']
+
+        scale = self.sim_info['intensity_error_scale']
+        baseline = intensity**2 + scale**2 * np.random.randn()*np.random.randn()
+
+        beta = self.sim_info['beta']
+        g2 = baseline * (1 + beta*g1**2)
+        scale = self.sim_info['g2_error_scale']
+        g2_error = scale * baseline * np.random.randn(g2.size)*np.random.randn(g2.size)
+        g2 = g2 + g2_error
+
+        data = {
+            'params': self.params,
+            'angle': angle,
+            'mode': 'sim',
+            'sim_info': self.sim_info,
+            'tau': self.tau,
+            'g2': g2,
+            'baseline': baseline,
+        }
+        return DlsData(data)
+
+
+
+if __name__ == '__main__':
+    
+    
+    #d = [10, 500]
+    #N = [1e11, 1]
+    d = np.linspace(1, 500, num=50)
+    N = genContinuousN(d, [10, 300], [3, 5], [10, 1])
+    tau = np.logspace(0, 5, num=200)
+    params = Params()
+    sim = DlsSimulator(d, N, 'continuous', tau, params)
+    mdlsdata = sim.simMdlsData(range(30, 151, 15))
+
+    plotSimData(mdlsdata, filename='test.png')
+
+    # save test
+    if False:
+        import json
+        with open('test.json', 'w') as f:
+            json.dump(mdlsdata.toDict(), f, indent=4)
+
+        with open('test.json', 'r') as f:
+            mdlsdata = MdlsData(json.load(f))
+
+    # plot
+    if False:
+        import matplotlib.pyplot as plt
+        plt.subplot(121)
+        for dlsdata in mdlsdata.data.values():
+            plt.plot(dlsdata.tau, dlsdata.g1**2)
+        #plt.plot(mdls.data[90].tau, mdls.data[90].g1**2)
+        plt.xscale('log')
+
+        plt.subplot(122)
+        l1, l2 = [], []
+        for dlsdata in mdlsdata.data.values():
+            l1.append(dlsdata.angle)
+            l2.append(dlsdata.intensity)
+        plt.plot(l1, l2)
+        #plt.yscale('log')
+
+        plt.show()
+
+        print('done')
