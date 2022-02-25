@@ -261,7 +261,9 @@ class Train:
         'batch_size': 3,
         'shuffle': True,
         'epoch_num': 500000,
-        'learning_rate': 0.001
+        'optimizer': 'Adam',
+        'learning_rate': 0.001,
+        'loss': 'MSELoss'
     }
     def __init__(self, mdlsdata:MdlsData, train_params:dict=None) -> None:
         self.mdlsdata = mdlsdata
@@ -271,13 +273,17 @@ class Train:
         self.train_params = copy.deepcopy(train_params)
         #self.dataloader = DataLoader()
 
-    def lossWithPenalty(self, y_pred, yb, N, G, weight_N=0, weight_G=0):
+    def MSELossWithPenalty(self, y_pred, yb, N, G, weight_N=0, weight_G=0):
         mseloss = torch.mean((yb-y_pred)**2)
         panelty_N = weight_N * torch.mean((N[2:]-2*N[1:-1]+N[:-2])**2)
         panelty_G = weight_G * torch.mean((G[2:]-2*G[1:-1]+G[:-2])**2)
         return mseloss + panelty_N + panelty_G
 
-    def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, visdom_env_name='MdlsNN'):
+    def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, env_name='MdlsNN'):
+        if train_params != None:
+            for key, value in train_params:
+                self.train_params[key] = value
+        
         dataset = MdlsDataset(self.mdls_tensordata, dev=dev)
         dataloader = DataLoader(
             dataset, 
@@ -295,44 +301,83 @@ class Train:
         epoch_list, loss_list = [], []
         epoch_num = self.train_params['epoch_num']
         if visdom_log:
-            logger = MdlsNNLogger(epoch_num, self.mdls_tensordata, model, environment=visdom_env_name)
-        for epoch in tqdm(range(epoch_num), desc='MdlsNN training process', unit='epoch'):
+            logger = MdlsNNLogger(epoch_num, self.mdls_tensordata, model, environment=env_name)
+        for epoch in tqdm(range(epoch_num), desc=env_name, unit='epoch'):
         #for epoch in range(epoch_num):
             for xb, yb in dataloader:
                 y_pred = model(xb)
-                #loss = mse_criterion(y_pred, yb)
-                N = model.getN(to_numpy=False)
-                G = model.getG(to_numpy=False)
-                loss = self.lossWithPenalty(y_pred, yb, N, G, weight_N=1e-6, weight_G=1e-4)
+                loss = mse_criterion(y_pred, yb)
+                #N = model.getN(to_numpy=False)
+                #G = model.getG(to_numpy=False)
+                #loss = self.MSELossWithPenalty(y_pred, yb, N, G, weight_N=1e-6, weight_G=1e-4)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
             if epoch % 100 == 0:
                 if visdom_log:
                     logger.log(epoch, loss.item())
+                    epoch_list.append(epoch)
+                    loss_list.append(loss.item())
                 #print(epoch, loss.item())
+        self.model = model
+        d = self.model.getD(to_numpy=True)
+        N = self.model.getN(to_numpy=True)
+        G = self.model.getG(to_numpy=True)
+
+        fit_g1square = {}
+        for angle, dlsdata in self.mdlsdata.data.items():
+            g1square = DataUtils.calcG1(dlsdata.tau, d, N, angle, dlsdata.params)**2
+            fit_g1square[angle] = g1square.tolist()
+
+        self.model = model
+        self.train_params['d'] = d.tolist()
+        self.train_params['dev'] = dev
+        self.result = {
+            'epoch': epoch_list,
+            'loss': loss_list,
+            'd': d.tolist(),
+            'N': N.tolist(),
+            'G': G.tolist(),
+            'fit_g1square': fit_g1square
+        }
+
+    def toDict(self) -> dict:
+        dic = {
+            'train_params': self.train_params,
+            'mdlsdata': self.mdlsdata.toDict(),
+            'result': self.result
+        }
+        return dic
+    
 
 
 if __name__ == '__main__':
     #import matplotlib.pyplot as plt
     import json
-
+    
     test_list = [
         'data\simdata_continuous_3.json',
         'data\simdata_continuous_2.json',
         'data\simdata_unimodal_2.json',
-        'data\simdata_bimodal_1.json',
         'data\simdata_bimodal_5.json',
+        'data\simdata_bimodal_1.json',
+        'data\simdata_bimodal_6.json',
         'data\simdata_trimodal_1.json',
         'data\simdata_trimodal_3.json',
     ]
-
+    
     for filename in test_list:
         with open(filename, 'r') as f:
             mdlsdata = MdlsData(json.load(f))
-
+    
         train = Train(mdlsdata)
         d = np.logspace(0, np.log10(1e4), num=50)
         env_name = filename.split('\\')[-1].split('.')[0]
-        train.train(d, dev='cuda', visdom_log=True, visdom_env_name=env_name)
+        train.train(d, dev='cuda', visdom_log=True, env_name=env_name)
+
+        result_name = env_name + '_result-MESLoss-dmax=1e4'
+        with open('data/{}.json'.format(result_name), 'w') as f:
+            json.dump(train.toDict(), f, indent=4)
+
+
     

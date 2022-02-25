@@ -71,7 +71,7 @@ class Params:
         self.ri_particle_img = params_dict['ri_particle_img']
 
     def toDict(self) -> dict:
-        dic = self.__dict__
+        dic = copy.deepcopy(self.__dict__)  # 深复制一个，否则更改__dict__会直接改变对象参数的值
         return dic
 
 
@@ -160,7 +160,7 @@ class DlsData:
         self.baseline = data['baseline']
         self.intensity = np.sqrt(self.baseline)
         if load:
-            self.beta = np.array(data['beta']).flatten()
+            self.beta = data['beta']
             self.g1square = np.array(data['g1square']).flatten()
             self.g1 = np.array(data['g1']).flatten()
         else:
@@ -182,7 +182,7 @@ class DlsData:
         return beta
 
     def toDict(self) -> dict:
-        dic = self.__dict__
+        dic = copy.deepcopy(self.__dict__)  # 深复制一个，否则更改__dict__会直接改变对象参数的值
         dic['tau'] = self.tau.tolist()
         dic['g2'] = self.g2.tolist()
         dic['g1'] = self.g1.tolist()
@@ -201,8 +201,9 @@ class MdlsData:
             self.mode = dic['mode']
             self.sim_info = dic['sim_info']
             self.exp_info = dic['exp_info']
-            for angle in dic['data'].keys():
-                self.data[angle] = DlsData(dic['data'][angle], load=True)
+            for dlsdata_dict in dic['data'].values():
+                angle = dlsdata_dict['angle']
+                self.data[angle] = DlsData(dlsdata_dict, load=True)
             
     def addDlsData(self, dlsdata:DlsData):
         self.data[dlsdata.angle] = dlsdata
@@ -215,7 +216,7 @@ class MdlsData:
         self.exp_info = dlsdata.exp_info
 
     def toDict(self) -> dict:
-        dic = self.__dict__
+        dic = copy.deepcopy(self.__dict__)  # 深复制一个，否则更改__dict__会直接改变对象参数的值
         dic['params'] = self.params.toDict()
         for angle in self.data.keys():
             dic['data'][angle] = self.data[angle].toDict()
