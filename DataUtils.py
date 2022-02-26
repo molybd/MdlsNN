@@ -4,8 +4,6 @@ from numpy import ndarray
 import PyMieScatt as ps
 import copy
 
-from PlotUtils import plotSimData
-
 '''
 ====== Attention ======
 at all place, the units are the regularly used units, c.a.
@@ -239,6 +237,7 @@ class DlsSimulator:
         self.tau = np.array(tau).flatten()
         self.d = np.array(d).flatten()
         self.N = np.array(N).flatten()
+        self.N = self.N / np.sum(self.N)  # 将N的分布归一化为和等于1
         self.params = params
 
         self.sim_info = copy.deepcopy(self.default_sim_info)
@@ -251,6 +250,13 @@ class DlsSimulator:
         self.sim_info['d'] = self.d.tolist()  # 便于存储
         self.sim_info['N'] = self.N.tolist()  # 便于存储
         self.sim_info['Nd_mode'] = Nd_mode
+        # 计算G便于画图，90度的
+        ri_particle_complex = complex(self.params.ri_particle_real, self.params.ri_particle_img)
+        I = np.array(
+            [mieScattInt(np.pi/2, di, self.params.wavelength, ri_particle_complex) for di in self.d]
+        )
+        G = self.N*I / np.sum(self.N*I)
+        self.sim_info['G'] = G.tolist()
 
     def simMdlsData(self, angles:list) -> MdlsData:
         I_list = []
@@ -305,7 +311,7 @@ class DlsSimulator:
 
 
 if __name__ == '__main__':
-    
+    from PlotUtils import plotSimData
     
     #d = [10, 500]
     #N = [1e11, 1]
