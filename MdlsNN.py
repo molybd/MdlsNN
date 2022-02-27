@@ -257,6 +257,7 @@ class MdlsNNModel(nn.Module):
 
 
 class Train:
+    # 较好的默认参数选择
     default_params = {
         'batch_size': 3,
         'shuffle': True,
@@ -264,8 +265,7 @@ class Train:
         'optimizer': 'Adam',
         'learning_rate': 0.001,
         'loss': 'MSELoss',
-        'weight_N': 0,
-        'weight_G': 0
+        'weight_G': 1e-4
     }
     def __init__(self, mdlsdata:MdlsData) -> None:
         self.mdlsdata = mdlsdata
@@ -273,11 +273,18 @@ class Train:
         self.train_params = copy.deepcopy(self.default_params)
         #self.dataloader = DataLoader()
 
+    '''
     def MSELossWithPenalty(self, y_pred, yb, N, G, weight_N=0, weight_G=0):
         mseloss = torch.mean((yb-y_pred)**2)
         panelty_N = weight_N * torch.mean((N[2:]-2*N[1:-1]+N[:-2])**2)
         panelty_G = weight_G * torch.mean((G[2:]-2*G[1:-1]+G[:-2])**2)
         return mseloss + panelty_N + panelty_G
+    '''
+    # 仅添加对于G的光滑性正则项即可，效果似乎也更好
+    def MSELossWithPenalty(self, y_pred, yb, G, weight_G=0):
+        mseloss = torch.mean((yb-y_pred)**2)
+        panelty_G = weight_G * torch.mean((G[2:]-2*G[1:-1]+G[:-2])**2)
+        return mseloss + panelty_G
 
     def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, env_name='MdlsNN'):
         if train_params != None:
@@ -301,7 +308,7 @@ class Train:
         if 'penalty' in loss_func_choice.lower():
             use_penalty = True
             penaltyloss = self.MSELossWithPenalty
-            weight_N, weight_G = self.train_params['weight_N'], self.train_params['weight_G']
+            weight_G = self.train_params['weight_G']
         else:
             use_penalty = False
             mseloss = nn.MSELoss(reduction='mean')
@@ -315,12 +322,11 @@ class Train:
             for xb, yb in dataloader:
                 y_pred = model(xb)
                 if use_penalty:
-                    N = model.getN(to_numpy=False)
+                    #N = model.getN(to_numpy=False)
                     G = model.getG(to_numpy=False)
-                    loss = penaltyloss(y_pred, yb, N, G, weight_N=weight_N, weight_G=weight_G)
+                    loss = penaltyloss(y_pred, yb, G, weight_G=weight_G)
                 else:
                     loss = mseloss(y_pred, yb)
-                #loss = mseloss(y_pred, yb)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -373,10 +379,6 @@ if __name__ == '__main__':
         env_name = mdlsdata_filename.split('\\')[-1].split('.')[0]
         train.train(d, train_params=train_params, dev='cuda', visdom_log=True, env_name=env_name)
         
-        # dmax = int(d.max())
-        # lossfunc = train.train_params['loss']
-        # weighN = train.train_params['weight_N']
-        # weighG = train.train_params['weight_G']
         result_name = env_name + suffix
         with open('data/{}.json'.format(result_name), 'w') as f:
             json.dump(train.toDict(), f, indent=4)
@@ -404,8 +406,6 @@ if __name__ == '__main__':
         'optimizer': 'Adam',
         'learning_rate': 0.001,
         'loss': 'MSELossWithPenalty',
-        #'loss': 'MSELoss',
-        'weight_N': 0,
         'weight_G': 1e-4
     }
     d = np.logspace(0, np.log10(1e4), num=100)  # 默认50
@@ -418,6 +418,8 @@ if __name__ == '__main__':
     suffix = '_result_MESLossWithPenalty_dmax=1e4_dnum=100_wtN=0_wtG=1e-3'
     for filename in testfile_list:
         trainFromJsonfile(filename, d, train_params, suffix)
+
+
     
 
 
