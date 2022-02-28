@@ -1,8 +1,8 @@
-from ast import Param
 import numpy as np
 from numpy import ndarray
 import PyMieScatt as ps
 import copy
+import os
 
 '''
 ====== Attention ======
@@ -140,7 +140,7 @@ class DlsData:
             self.params = Params(params)
         elif isinstance(params, Params):
             self.params = params
-        self.angle = data['angle']  
+        self.angle = int(data['angle'])  
         self.theta = self.angle/180*np.pi  
 
         self.mode = data['mode']
@@ -308,6 +308,60 @@ class DlsSimulator:
         }
         return DlsData(data)
 
+    
+def loadBrookhavenDatFile(filename:str, comments:str=None, baseline:str='calculated') -> DlsData:
+    mode = 'exp'
+    with open(filename, 'r', encoding='utf-8') as f:
+        lines = list(f.readlines())
+    lines = [line.rstrip('\n') for line in lines] # 删除末尾的换行符
+    raw_data = '\n'.join(lines)
+    params_dict = {
+    'wavelength': float(lines[9]),           # nanometer
+    'temperature': float(lines[10]),          # Kelvin
+    'viscosity': float(lines[11]),           # cP
+    'ri_liquid': float(lines[13]),
+    'ri_particle_real': float(lines[14]),
+    'ri_particle_img': float(lines[15])
+    }
+    params = Params(params_dict=params_dict)
+    angle = int(float(lines[8]))
+    try:
+        baseline = float(baseline)  # in case of inputed number
+    except:
+        if 'mea' in baseline.lower(): 
+            baseline = float(lines[22])
+        else:  # default use calculated baseline
+            baseline = float(lines[21])
+    
+    # 新旧软件输出不同
+    if ',' in lines[37]:
+        delimiter = ', ' 
+    else:
+        delimiter = ' '
+    tau, g2 = [], []
+    for line in lines[37:-4]:
+        tau.append(float(line.split(delimiter)[0]))
+        g2.append(float(line.split(delimiter)[1]))
+    exp_info = {
+        'filename': os.path.basename(filename),
+        'comments': comments,
+        'sample_id': lines[-4],
+        'operator_id': lines[-3],
+        'date': lines[-2],
+        'time': lines[-1],
+        'raw_data': raw_data
+    }
+    data = {
+        'params': params,
+        'angle': angle,
+        'mode': mode,
+        'exp_info': exp_info,
+        'baseline': baseline,
+        'tau': tau,
+        'g2': g2
+    }
+    dlsdata = DlsData(data)
+    return dlsdata
 
 
 if __name__ == '__main__':

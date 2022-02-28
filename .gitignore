@@ -131,14 +131,12 @@ dmypy.json
 # test files
 test*
 
-# data and results
-fitting_experiments/
-
 # for my reference only
 reference/
 
-# temporary backup files
+# temporary files
 backup/
+data/exp_dat_files/
 
 # comments for myself only
 comments_for_myself.md

@@ -72,10 +72,12 @@ class MdlsNNModel(nn.Module):
         self.d = torch.from_numpy(d).float().to(dev)
         try:
             param_N = self.genParamN(N_init)
-            param_N = torch.tensor(param_N).float().to(dev)
+            param_N = torch.tensor(param_N).float()
         except:
             param_N = torch.rand(d.size)
         self.param_N = nn.Parameter(param_N)  # 模型参数
+        k = torch.tensor(1.0).float()
+        self.k = nn.Parameter(k)  # 使用SLS penalty的话需要，否则就没用
         
         self.scatt_int = self.genMieScattIntDict()
 
@@ -224,19 +226,19 @@ class MdlsNNModel(nn.Module):
         
         return self.all_I.index_select(0, index)
     '''
-    def getD(self, to_numpy=True):
+    def getD(self, to_numpy=False):
         if to_numpy:
             return self.d.cpu().detach().numpy()
         else:
             return self.d
 
-    def getN(self, to_numpy=True):
+    def getN(self, to_numpy=False):
         if to_numpy:
             return self.genN().cpu().detach().numpy()
         else:
             return self.genN()
 
-    def getG(self, to_numpy=True):
+    def getG(self, to_numpy=False):
         angle = 90  # 默认使用90度
         N = self.getN(to_numpy=False)
         I = self.scatt_int[angle]
@@ -247,7 +249,13 @@ class MdlsNNModel(nn.Module):
         else:
             return G
 
-    def getG1square(self, to_numpy=True):
+    def getK(self, to_numpy=False):
+        if to_numpy:
+            return self.k.cpu().detach().numpy()
+        else:
+            return self.k
+
+    def getG1square(self, to_numpy=False):
         g1square = self.forward(self.angle)
         if to_numpy:
             return g1square.cpu().detach().numpy()
@@ -264,27 +272,56 @@ class Train:
         'epoch_num': 500000,
         'optimizer': 'Adam',
         'learning_rate': 0.001,
-        'loss': 'MSELoss',
-        'weight_G': 1e-4
+        'loss': 'MSELoss+G_penalty',
+        'weight_G': 1e-3,
+        'weight_SLS': 0,
+        'b': 1e3
     }
     def __init__(self, mdlsdata:MdlsData) -> None:
         self.mdlsdata = mdlsdata
         self.mdls_tensordata = MdlsTensorData(mdlsdata)
         self.train_params = copy.deepcopy(self.default_params)
         #self.dataloader = DataLoader()
+    
+    def mieScattIntMat(self, d:list, angles:list):
+        '''生成米氏散射矩阵'''
+        wavelength = self.mdlsdata.params.wavelength
+        ri_particle_complex = complex(
+            self.mdlsdata.params.ri_particle_real, self.mdlsdata.params.ri_particle_img
+            )
+        Int_all = []
+        for angle in angles:
+            theta = angle/180*np.pi
+            Int_angle = []
+            for di in d:
+                Int_angle.append(
+                    DataUtils.mieScattInt(theta, di, wavelength, ri_particle_complex)
+                )
+            Int_all.append(Int_angle)
+        Int_mat = torch.tensor(Int_all).float()  # (n_angle, n_d)
+        return Int_mat
 
-    '''
-    def MSELossWithPenalty(self, y_pred, yb, N, G, weight_N=0, weight_G=0):
-        mseloss = torch.mean((yb-y_pred)**2)
-        panelty_N = weight_N * torch.mean((N[2:]-2*N[1:-1]+N[:-2])**2)
-        panelty_G = weight_G * torch.mean((G[2:]-2*G[1:-1]+G[:-2])**2)
-        return mseloss + panelty_N + panelty_G
-    '''
-    # 仅添加对于G的光滑性正则项即可，效果似乎也更好
-    def MSELossWithPenalty(self, y_pred, yb, G, weight_G=0):
-        mseloss = torch.mean((yb-y_pred)**2)
-        panelty_G = weight_G * torch.mean((G[2:]-2*G[1:-1]+G[:-2])**2)
-        return mseloss + panelty_G
+    def secondDerivMat(self, n_d:int):
+        '''生成二阶导数的计算矩阵'''
+        n_row = n_d - 2
+        n_col = n_d
+        l = []
+        for i in range(n_row):
+            left = np.zeros(i)
+            mid = np.array([1, -2, 1])
+            right = np.zeros(n_col-i-3)
+            row = np.hstack((left, mid, right))
+            l.append(row)
+        mat = np.vstack(l)
+        return torch.from_numpy(mat).float()
+
+    def smoothPenalty(self, N_or_G):
+        return torch.mean(torch.einsum('ij,j->i', self.penalty_mat, N_or_G)**2)
+
+    def SLSPenalty(self, k, N):
+        I_pred = k * torch.einsum('ij,j->i', self.Int_mat, N) + self.b
+        I_pred_log = torch.log10(I_pred)
+        return torch.mean((self.I_exp_log-I_pred_log)**2)
 
     def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, env_name='MdlsNN'):
         if train_params != None:
@@ -302,16 +339,23 @@ class Train:
             lr=self.train_params['learning_rate']
             )
         model.to(dev)
+        
+        mseloss = nn.MSELoss(reduction='mean')
 
-        # determine loss function
-        loss_func_choice = self.train_params['loss'].lower()
-        if 'penalty' in loss_func_choice.lower():
-            use_penalty = True
-            penaltyloss = self.MSELossWithPenalty
-            weight_G = self.train_params['weight_G']
-        else:
-            use_penalty = False
-            mseloss = nn.MSELoss(reduction='mean')
+        # G penalty所需的项
+        self.penalty_mat = self.secondDerivMat(d.size).to(dev)
+        weight_G = torch.tensor(self.train_params['weight_G']).float().to(dev)
+        
+        # SLS penalty所需要的项
+        angles = list(self.mdlsdata.data.keys())
+        angles.sort()  # SLS所用的均为同样顺序的序列
+        self.I_exp = torch.tensor(
+            [self.mdlsdata.data[angle].intensity for angle in angles]
+        ).float().to(dev)
+        self.I_exp_log = torch.log10(self.I_exp)
+        self.Int_mat = self.mieScattIntMat(d, angles).to(dev)  # (n_angle, n_d)
+        self.b = torch.tensor(self.train_params['b']).to(dev)
+        weight_SLS = torch.tensor(self.train_params['weight_SLS']).float().to(dev)
 
         epoch_list, loss_list = [], []
         epoch_num = self.train_params['epoch_num']
@@ -321,12 +365,10 @@ class Train:
         #for epoch in range(epoch_num):
             for xb, yb in dataloader:
                 y_pred = model(xb)
-                if use_penalty:
-                    #N = model.getN(to_numpy=False)
-                    G = model.getG(to_numpy=False)
-                    loss = penaltyloss(y_pred, yb, G, weight_G=weight_G)
-                else:
-                    loss = mseloss(y_pred, yb)
+                G = model.getG()
+                #loss = mseloss(y_pred, yb)
+                loss = mseloss(y_pred, yb) + weight_G*self.smoothPenalty(G) # 仅添加对于G的光滑性正则项而不添加N的效果似乎更好
+                #loss = mseloss(y_pred, yb) + weight_G*self.smoothPenalty(G) + weight_SLS*self.SLSPenalty(model.getK(), model.getN())
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -376,10 +418,11 @@ if __name__ == '__main__':
             mdlsdata = MdlsData(json.load(f))
 
         train = Train(mdlsdata)
-        env_name = mdlsdata_filename.split('\\')[-1].split('.')[0]
+        name = mdlsdata_filename.split('\\')[-1].split('.')[0]
+        env_name = name + '_wtG=1e-2'
         train.train(d, train_params=train_params, dev='cuda', visdom_log=True, env_name=env_name)
         
-        result_name = env_name + suffix
+        result_name = name + suffix
         with open('data/{}.json'.format(result_name), 'w') as f:
             json.dump(train.toDict(), f, indent=4)
 
@@ -399,25 +442,15 @@ if __name__ == '__main__':
         #'data\simdata_unimodal_2.json',
     ]
 
-    train_params = {
-        'batch_size': 3,
-        'shuffle': True,
-        'epoch_num': 500000,
-        'optimizer': 'Adam',
-        'learning_rate': 0.001,
-        'loss': 'MSELossWithPenalty',
-        'weight_G': 1e-4
-    }
+    train_params = {'weight_G': 1e-2}
     d = np.logspace(0, np.log10(1e4), num=100)  # 默认50
-    suffix = '_result_MESLossWithPenalty_dmax=1e4_dnum=100_wtN=0_wtG=1e-4'
+    suffix = '_result_MESLoss+GPenalty_dmax=1e4_dnum=100_wtG=1e-2'
     for filename in testfile_list:
         trainFromJsonfile(filename, d, train_params, suffix)
 
-    train_params['weight_G'] = 1e-3
-    d = np.logspace(0, np.log10(1e4), num=100)  # 默认50
-    suffix = '_result_MESLossWithPenalty_dmax=1e4_dnum=100_wtN=0_wtG=1e-3'
-    for filename in testfile_list:
-        trainFromJsonfile(filename, d, train_params, suffix)
+    
+
+    
 
 
     
