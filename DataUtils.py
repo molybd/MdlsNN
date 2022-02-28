@@ -164,7 +164,7 @@ class DlsData:
         else:
             self.calcG1()
 
-    def calcG1(self, pnum_fitbeta:int=5) -> None:
+    def calcG1(self, pnum_fitbeta:int=10) -> None:
         # pnum_fitbeta是取前多少个点拟合beta的值
         Ctau = self.g2/self.baseline - 1
         self.beta = self._calcBeta(self.tau, Ctau, pnum_fitbeta)
@@ -202,10 +202,21 @@ class MdlsData:
             for dlsdata_dict in dic['data'].values():
                 angle = dlsdata_dict['angle']
                 self.data[angle] = DlsData(dlsdata_dict, load=True)
+            self.sortDataDict()
             
     def addDlsData(self, dlsdata:DlsData):
         self.data[dlsdata.angle] = dlsdata
         self.updateParams(dlsdata)
+        self.sortDataDict()
+
+    def sortDataDict(self):
+        '''保持data中角度顺序始终由小到大'''
+        angles = list(self.data.keys())
+        angles.sort()
+        temp_dict = copy.deepcopy(self.data)
+        self.data = {}
+        for angle in angles:
+            self.data[angle] = temp_dict[angle]
 
     def updateParams(self, dlsdata:DlsData):
         self.params = dlsdata.params
