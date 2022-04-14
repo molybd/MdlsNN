@@ -136,7 +136,8 @@ reference/
 
 # temporary files
 backup/
-data/exp_dat_files/
+data/exp_dat_files
+data/CONTIN_result
 
 # comments for myself only
 comments_for_myself.md
@@ -146,4 +147,10 @@ comments_for_myself.md
 *.svg
 
 # legacy codes
-legacy/*
+legacy/
+
+# thesis related scripts
+thesis*
+
+# 
+*.ipynb

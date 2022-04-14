@@ -6,9 +6,9 @@ import torch
 import numpy as np
 
 class MdlsNNLogger:
-    def __init__(self, epoch_num, mdls_tensordata, model, diameter_distribution_xtype='log', environment='MdlsNN'):
+    def __init__(self, epoch_num, mdls_tensordata, model, diameter_distribution_xtype='log', environment='MdlsNN', port=8097):
         self.epoch_num = epoch_num
-        self.viz = visdom.Visdom(env=environment)
+        self.viz = visdom.Visdom(env=environment, port=port)
         self.mdls_tensordata = mdls_tensordata
         self.model = model
         self.diameter_distribution_xtype = diameter_distribution_xtype

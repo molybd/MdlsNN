@@ -323,7 +323,7 @@ class Train:
         I_pred_log = torch.log10(I_pred)
         return torch.mean((self.I_exp_log-I_pred_log)**2)
 
-    def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, env_name='MdlsNN'):
+    def train(self, d:ndarray, train_params:dict=None, dev='cpu', visdom_log=False, env_name='MdlsNN', visdom_port=8097):
         if train_params != None:
             self.train_params.update(train_params)
         
@@ -341,6 +341,7 @@ class Train:
         model.to(dev)
         
         mseloss = nn.MSELoss(reduction='mean')
+        l1loss = nn.L1Loss(reduction='mean')
 
         # G penalty所需的项
         self.penalty_mat = self.secondDerivMat(d.size).to(dev)
@@ -360,7 +361,7 @@ class Train:
         epoch_list, loss_list = [], []
         epoch_num = self.train_params['epoch_num']
         if visdom_log:
-            logger = MdlsNNLogger(epoch_num, self.mdls_tensordata, model, environment=env_name)
+            logger = MdlsNNLogger(epoch_num, self.mdls_tensordata, model, environment=env_name, port=visdom_port)
         for epoch in tqdm(range(epoch_num), desc=env_name, unit='epoch'):
         #for epoch in range(epoch_num):
             for xb, yb in dataloader:
@@ -369,6 +370,7 @@ class Train:
                 #loss = mseloss(y_pred, yb)
                 loss = mseloss(y_pred, yb) + weight_G*self.smoothPenalty(G) # 仅添加对于G的光滑性正则项而不添加N的效果似乎更好
                 #loss = mseloss(y_pred, yb) + weight_G*self.smoothPenalty(G) + weight_SLS*self.SLSPenalty(model.getK(), model.getN())
+                #loss = l1loss(y_pred, yb) + weight_G*self.smoothPenalty(G)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -419,8 +421,8 @@ if __name__ == '__main__':
 
         train = Train(mdlsdata)
         name = mdlsdata_filename.split('\\')[-1].split('.')[0]
-        env_name = name + '_wtG=1e-2'
-        train.train(d, train_params=train_params, dev='cuda', visdom_log=True, env_name=env_name)
+        env_name = name + '_wtG=1e-3'
+        train.train(d, train_params=train_params, dev='cuda', visdom_log=True, env_name=env_name, visdom_port=13625)
         
         result_name = name + suffix
         with open('data/{}.json'.format(result_name), 'w') as f:
@@ -428,6 +430,7 @@ if __name__ == '__main__':
 
 
     testfile_list = [
+        'data\expdata_PS_80-300-500nm=1-1-1.json',
         'data\simdata_continuous_0.json',
         'data\simdata_continuous_1.json',
         'data\simdata_continuous_2.json',
@@ -442,9 +445,9 @@ if __name__ == '__main__':
         #'data\simdata_unimodal_2.json',
     ]
 
-    train_params = {'weight_G': 1e-2}
+    train_params = {'weight_G': 1e-1}
     d = np.logspace(0, np.log10(1e4), num=100)  # 默认50
-    suffix = '_result_MESLoss+GPenalty_dmax=1e4_dnum=100_wtG=1e-2'
+    suffix = '_result_MESLoss+GPenalty_dmax=1e4_dnum=100_wtG=1e-3'
     for filename in testfile_list:
         trainFromJsonfile(filename, d, train_params, suffix)
 
